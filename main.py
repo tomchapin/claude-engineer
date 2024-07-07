@@ -1,44 +1,59 @@
-import os
-from datetime import datetime
-import json
-from colorama import init, Fore, Style
-from pygments import highlight
-from pygments.lexers import get_lexer_by_name
-from pygments.formatters import TerminalFormatter
-from pygments.lexers.diff import DiffLexer
-from tavily import TavilyClient
-import pygments.util
-import base64
-from PIL import Image
-import io
-import re
-from anthropic import Anthropic
-import difflib
-import time
+# Standard library imports
+import os  # For interacting with the operating system (file/directory operations)
+import json  # For JSON encoding and decoding (data serialization)
+import time  # For time-related functions (not currently used in this snippet)
+import base64  # For encoding and decoding base64 data (used for image processing)
+import io  # For handling byte streams (used in image processing)
+import re  # For regular expressions (used in parsing and text processing)
+import difflib  # For comparing sequences (used in file diff generation)
 
-# Initialize colorama
+# Third-party library imports
+import dotenv  # For loading environment variables from a .env file
+from datetime import datetime  # For working with dates and times (not currently used in this snippet)
+from colorama import init, Fore, Style  # For adding color to terminal output
+from pygments import highlight  # For syntax highlighting of code
+from pygments.lexers import get_lexer_by_name  # For getting lexers for different programming languages
+from pygments.formatters import TerminalFormatter  # For formatting highlighted code for terminal output
+from pygments.lexers.diff import DiffLexer  # For highlighting diff output
+from tavily import TavilyClient  # For performing web searches
+import pygments.util  # For additional Pygments utilities
+from PIL import Image  # For image processing (resizing and format conversion)
+from anthropic import Anthropic  # For interacting with the Anthropic API (Claude AI)
+
+# Initial setup and constants
+
+# Load environment variables from .env file
+dotenv.load_dotenv()
+
+# Initialize colorama for cross-platform colored terminal output
 init()
 
-# Color constants
-USER_COLOR = Fore.WHITE
-CLAUDE_COLOR = Fore.BLUE
-TOOL_COLOR = Fore.YELLOW
-RESULT_COLOR = Fore.GREEN
+# Define color constants for different types of output
+USER_COLOR = Fore.WHITE      # Color for user input
+CLAUDE_COLOR = Fore.BLUE     # Color for Claude's responses
+TOOL_COLOR = Fore.YELLOW     # Color for tool-related messages
+RESULT_COLOR = Fore.GREEN    # Color for tool results
 
-# Add these constants at the top of the file
-CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
-MAX_CONTINUATION_ITERATIONS = 25
+# Define constants for the conversation flow
+CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"  # Phrase to exit continuation mode
+MAX_CONTINUATION_ITERATIONS = 25  # Maximum number of iterations in continuation mode
 
-# Initialize the Anthropic client
-client = Anthropic(api_key="YOUR KEY")
+# Initialize Anthropic client for interacting with Claude API
+client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-# Initialize the Tavily client
-tavily = TavilyClient(api_key="YOUR KEY")
+# Initialize Tavily client for web searches
+tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
-# Set up the conversation memory
+# Initialize conversation history
 conversation_history = []
 
-# automode flag
+# Flag to indicate if we're in automode
+automode = False
+
+# Set up the conversation memory (duplicate initialization, consider removing)
+conversation_history = []
+
+# automode flag (duplicate initialization, consider removing)
 automode = False
 
 # System prompt
@@ -124,6 +139,16 @@ YOU NEVER ASK "Is there anything else you'd like to add or modify in the project
 """
 
 def update_system_prompt(current_iteration=None, max_iterations=None):
+    """
+    Update the system prompt with current automode status and iteration information.
+    
+    Args:
+    current_iteration (int, optional): The current iteration number in automode.
+    max_iterations (int, optional): The maximum number of iterations allowed in automode.
+    
+    Returns:
+    str: The updated system prompt.
+    """
     global system_prompt
     automode_status = "You are currently in automode." if automode else "You are not in automode."
     iteration_info = ""
@@ -132,6 +157,13 @@ def update_system_prompt(current_iteration=None, max_iterations=None):
     return system_prompt.format(automode_status=automode_status, iteration_info=iteration_info)
 
 def print_colored(text, color):
+    """
+    Print text in the specified color, handling cases where the text already contains color codes.
+    
+    Args:
+    text (str): The text to print.
+    color (str): The color to use for printing.
+    """
     # Check if the text already contains color codes
     if '\033[' in text:
         print(text)  # Print as-is if color codes are present
@@ -139,6 +171,13 @@ def print_colored(text, color):
         print(f"{color}{text}{Style.RESET_ALL}")
 
 def print_code(code, language):
+    """
+    Print code with syntax highlighting for the specified language.
+    
+    Args:
+    code (str): The code to print.
+    language (str): The programming language of the code.
+    """
     try:
         lexer = get_lexer_by_name(language, stripall=True)
         formatted_code = highlight(code, lexer, TerminalFormatter())
@@ -147,6 +186,15 @@ def print_code(code, language):
         print_colored(f"Code (language: {language}):\n{code}", CLAUDE_COLOR)
 
 def create_folder(path):
+    """
+    Create a new folder at the specified path.
+    
+    Args:
+    path (str): The path where the folder should be created.
+    
+    Returns:
+    str: A message indicating success or failure.
+    """
     try:
         os.makedirs(path, exist_ok=True)
         return f"Folder created: {path}"
@@ -154,6 +202,16 @@ def create_folder(path):
         return f"Error creating folder: {str(e)}"
 
 def create_file(path, content=""):
+    """
+    Create a new file at the specified path with the given content.
+    
+    Args:
+    path (str): The path where the file should be created.
+    content (str, optional): The content to write to the file. Defaults to an empty string.
+    
+    Returns:
+    str: A message indicating success or failure.
+    """
     try:
         with open(path, 'w') as f:
             f.write(content)
@@ -162,9 +220,29 @@ def create_file(path, content=""):
         return f"Error creating file: {str(e)}"
 
 def highlight_diff(diff_text):
+    """
+    Highlight the differences in a diff text.
+    
+    Args:
+    diff_text (str): The diff text to highlight.
+    
+    Returns:
+    str: The highlighted diff text.
+    """
     return highlight(diff_text, DiffLexer(), TerminalFormatter())
 
 def generate_and_apply_diff(original_content, new_content, path):
+    """
+    Generate a diff between original and new content, apply the changes, and return a colored diff.
+    
+    Args:
+    original_content (str): The original content of the file.
+    new_content (str): The new content to be applied.
+    path (str): The path of the file being modified.
+    
+    Returns:
+    str: A message indicating the changes applied, including a colored diff.
+    """
     diff = list(difflib.unified_diff(
         original_content.splitlines(keepends=True),
         new_content.splitlines(keepends=True),
@@ -198,6 +276,16 @@ def generate_and_apply_diff(original_content, new_content, path):
         return f"Error applying changes: {str(e)}"
 
 def search_file(path, search_pattern):
+    """
+    Search for a specific pattern in a file and return the line numbers where the pattern is found.
+    
+    Args:
+    path (str): The path of the file to search.
+    search_pattern (str): The pattern to search for in the file.
+    
+    Returns:
+    str: A message indicating the line numbers where matches were found.
+    """
     try:
         with open(path, 'r') as file:
             content = file.readlines()
@@ -212,6 +300,18 @@ def search_file(path, search_pattern):
         return f"Error searching file: {str(e)}"
 
 def edit_file(path, start_line, end_line, new_content):
+    """
+    Edit a specific range of lines in a file.
+    
+    Args:
+    path (str): The path of the file to edit.
+    start_line (int): The starting line number of the edit.
+    end_line (int): The ending line number of the edit.
+    new_content (str): The new content to replace the specified lines.
+    
+    Returns:
+    str: A message indicating the result of the edit, including a diff of the changes.
+    """
     try:
         with open(path, 'r') as file:
             content = file.readlines()
@@ -235,6 +335,15 @@ def edit_file(path, start_line, end_line, new_content):
 
 
 def read_file(path):
+    """
+    Read the contents of a file at the specified path.
+    
+    Args:
+    path (str): The path of the file to read.
+    
+    Returns:
+    str: The contents of the file, or an error message if the file cannot be read.
+    """
     try:
         with open(path, 'r') as f:
             content = f.read()
@@ -243,6 +352,11 @@ def read_file(path):
         return f"Error reading file: {str(e)}"
 
 def list_files(path="."):
+    """
+    List all files and directories in the specified path.
+    
+    Args:
+    """
     try:
         files = os.listdir(path)
         return "\n".join(files)
